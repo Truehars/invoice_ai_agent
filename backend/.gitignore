@@ -1,3 +1,4 @@
 .env
 invoice.pdf
 output.txt
+__pycache__
