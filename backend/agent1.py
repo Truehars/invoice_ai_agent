@@ -1,16 +1,16 @@
 from dotenv import load_dotenv
 import os
 import json
-from langchain_openai import ChatOpenAI
+from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
 # Load environment variables
 load_dotenv()
 
 # Check API key
-api_key = os.getenv("OPENROUTER_API_KEY")
+api_key = os.getenv("AZURE_OPENAI_API_KEY")
 if not api_key:
-    raise ValueError("OPENROUTER_API_KEY not found")
+    raise ValueError("AZURE_OPENAI_API_KEY not found")
 
 # System prompt
 EXTRACTION_SYSTEM_PROMPT = """
@@ -43,6 +43,7 @@ Extraction Rules:
 - If invoice_number is not present, do not include it
 - If GST number is not present, do not include it
 - Same rule applies for all fields
+- don't miss any possible fields
 
 Example extracted_fields format:
 "extracted_fields": {
@@ -69,7 +70,7 @@ Possible fields:
 - loan_account_number, bank_name, account_number, ifsc_code
 - currency, subtotal, tax_amount, total_amount
 
-Line Item Format:
+Example Line Item Format:
 "line_items": [
   {
     "description": "Laptop",
@@ -92,15 +93,12 @@ Rules:
 - extraction_status must be: "success", "partial", or "failed"
 """.strip()
 
-# Initialize LLM via OpenRouter
-llm = ChatOpenAI(
-    model="openai/gpt-oss-120b:free",                      # ← auto-selects a free model
-    openai_api_key=api_key,
-    openai_api_base="https://openrouter.ai/api/v1",
-    default_headers={
-        "HTTP-Referer": "http://localhost",
-        "X-Title": "DataExtractionAgent",
-    }
+# Initialize LLM via Azure OpenAI
+llm = AzureChatOpenAI(
+    azure_deployment="gpt-4o-mini",
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    api_version="2024-02-01",
 )
 
 # Read extracted raw text
