@@ -1,6 +1,7 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import "./App.css";
 import { uploadInvoice } from "./api/invoiceApi";
+import wnsLogo from "./assets/wns.png";
 
 // Upload state machine
 const STATUS = {
@@ -10,22 +11,53 @@ const STATUS = {
   ERROR: "error",
 };
 
+// ── Theme Toggle Button ───────────────────────────────────────────────────────
+function ThemeToggle({ theme, onToggle }) {
+  return (
+    <button
+      className="theme-toggle"
+      onClick={onToggle}
+      title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+      aria-label="Toggle theme"
+    >
+      <span className="theme-toggle-track">
+        <span className="theme-toggle-thumb">
+          {theme === "dark" ? "🌙" : "☀️"}
+        </span>
+      </span>
+      <span className="theme-toggle-label">
+        {theme === "dark" ? "Dark" : "Light"}
+      </span>
+    </button>
+  );
+}
+
 export default function App() {
   const [pdfFile, setPdfFile]       = useState(null);
   const [pdfUrl, setPdfUrl]         = useState(null);
   const [isDragging, setIsDragging] = useState(false);
 
-  const [uploadStatus, setUploadStatus]   = useState(STATUS.IDLE);
+  const [uploadStatus, setUploadStatus]     = useState(STATUS.IDLE);
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadResult, setUploadResult]   = useState(null);
-  const [uploadError, setUploadError]     = useState(null);
+  const [uploadResult, setUploadResult]     = useState(null);
+  const [uploadError, setUploadError]       = useState(null);
 
   // Right panel tab: "preview" | "info"
   const [rightTab, setRightTab] = useState("preview");
 
+  // Theme: "dark" | "light"
+  const [theme, setTheme] = useState("dark");
+
   const fileInputRef = useRef(null);
 
-  // ── File selection ────────────────────────────────────────────────────────
+  // Apply theme to <html> element
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
+
+  // ── File selection ─────────────────────────────────────────────────────────
 
   const handleFile = (file) => {
     if (!file || file.type !== "application/pdf") return;
@@ -38,12 +70,7 @@ export default function App() {
     setRightTab("preview");
   };
 
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setIsDragging(false);
-    handleFile(e.dataTransfer.files[0]);
-  };
-
+  const handleDrop       = (e) => { e.preventDefault(); setIsDragging(false); handleFile(e.dataTransfer.files[0]); };
   const handleDragOver   = (e) => { e.preventDefault(); setIsDragging(true); };
   const handleDragLeave  = ()  => setIsDragging(false);
   const handleInputChange = (e) => handleFile(e.target.files[0]);
@@ -58,7 +85,7 @@ export default function App() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  // ── Upload to backend ─────────────────────────────────────────────────────
+  // ── Upload to backend ──────────────────────────────────────────────────────
 
   const handleUpload = async () => {
     if (!pdfFile) return;
@@ -70,17 +97,16 @@ export default function App() {
       const result = await uploadInvoice(pdfFile, (pct) => setUploadProgress(pct));
       setUploadResult(result);
       setUploadStatus(STATUS.SUCCESS);
-      setRightTab("info"); // auto-switch to info tab after success
+      setRightTab("info");
     } catch (err) {
       setUploadError(err.message);
       setUploadStatus(STATUS.ERROR);
     }
   };
 
-  // ── Right panel body ──────────────────────────────────────────────────────
+  // ── Right panel body ───────────────────────────────────────────────────────
 
   const renderRightBody = () => {
-    // No file selected yet
     if (!pdfFile) {
       return (
         <div className="placeholder-content">
@@ -91,7 +117,6 @@ export default function App() {
       );
     }
 
-    // Preview tab — always show the iframe once a file is selected
     if (rightTab === "preview") {
       return (
         <div className="right-pdf-preview">
@@ -104,7 +129,6 @@ export default function App() {
       );
     }
 
-    // Info tab
     if (rightTab === "info") {
       if (uploadStatus === STATUS.IDLE) {
         return (
@@ -156,28 +180,37 @@ export default function App() {
     }
   };
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="app">
 
       {/* ── Navbar ── */}
       <nav className="navbar">
+        {/* WNS Logo */}
+        <div className="nav-logo">
+          <img src={wnsLogo} alt="WNS" className="wns-logo" />
+          <span className="nav-logo-divider" />
+        </div>
+
         <div className="nav-brand">
           <span className="brand-icon">⚡</span>
           <span className="brand-text">
             invoice<span className="brand-accent">Agent</span>
           </span>
         </div>
+
         <div className="nav-search">
           <span className="search-icon">🔍</span>
           <input type="text" placeholder="Search invoices..." />
           <kbd>Ctrl K</kbd>
         </div>
+
         <div className="nav-actions">
           <button className="nav-btn" title="GitHub">⬡</button>
           <button className="nav-btn" title="Settings">⚙</button>
-          <div className="nav-mode">Auto ▾</div>
+          {/* Theme Toggle replaces "Auto ▾" */}
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
         </div>
       </nav>
 
@@ -237,11 +270,11 @@ export default function App() {
               onClick={pdfFile ? handleUpload : () => fileInputRef.current?.click()}
               disabled={uploadStatus === STATUS.UPLOADING}
             >
-              {!pdfFile                                    && "Get Started →"}
-              {pdfFile && uploadStatus === STATUS.IDLE     && "Send to Backend →"}
+              {!pdfFile                                     && "Get Started →"}
+              {pdfFile && uploadStatus === STATUS.IDLE      && "Send to Backend →"}
               {pdfFile && uploadStatus === STATUS.UPLOADING && `Uploading ${uploadProgress}%…`}
-              {pdfFile && uploadStatus === STATUS.SUCCESS  && "Upload Another →"}
-              {pdfFile && uploadStatus === STATUS.ERROR    && "Retry Upload →"}
+              {pdfFile && uploadStatus === STATUS.SUCCESS   && "Upload Another →"}
+              {pdfFile && uploadStatus === STATUS.ERROR     && "Retry Upload →"}
             </button>
             <button
               className="btn-secondary"
@@ -275,12 +308,8 @@ export default function App() {
                     onClick={() => setRightTab("info")}
                   >
                     Upload Info
-                    {uploadStatus === STATUS.SUCCESS && (
-                      <span className="tab-badge success" />
-                    )}
-                    {uploadStatus === STATUS.ERROR && (
-                      <span className="tab-badge error" />
-                    )}
+                    {uploadStatus === STATUS.SUCCESS && <span className="tab-badge success" />}
+                    {uploadStatus === STATUS.ERROR   && <span className="tab-badge error" />}
                   </button>
                 </div>
               ) : (
