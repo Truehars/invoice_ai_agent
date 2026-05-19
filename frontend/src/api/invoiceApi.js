@@ -8,12 +8,12 @@ const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
  * Upload PDF invoice
  */
 export async function uploadInvoice(file, onProgress) {
-  const formData = new FormData();
-  formData.append("file", file);
+  const formData = new FormData(); //FormData is used to send files over HTTP.
+  formData.append("file", file); //file is the actual PDF selected by the user.
 
   try {
     const response = await axios.post(
-      `${BASE_URL}/api/invoices/upload`,
+      `${BASE_URL}/api/invoices/upload`,    //This sends the PDF to FastAPI backend endpoint:
       formData,
       {
         headers: {
