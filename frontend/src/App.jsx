@@ -1,178 +1,200 @@
-import { useState, useRef, useEffect } from "react";
+// src/App.jsx
+import { useState, useRef, useEffect, useCallback } from "react";
 import "./App.css";
-import { uploadInvoice } from "./api/invoiceApi";
-import wnsLogo from "./assets/wns.png";
+import { uploadInvoice, analyseInvoice, sendChatMessage } from "./api/invoiceApi";
 
-// ── App States ──────────────────────────────────────────────────────────────
+// ── Constants ────────────────────────────────────────────────────
+
 const STATUS = {
   IDLE:      "idle",
   UPLOADING: "uploading",
+  ANALYSING: "analysing",
   SUCCESS:   "success",
   ERROR:     "error",
 };
 
-// ── Predefined Q&A ──────────────────────────────────────────────────────────
-const FAQ = [
-  {
-    patterns: ["hi", "hello", "hey", "hii", "helo", "greetings", "good morning", "good afternoon", "good evening"],
-    response:
-      "👋 Hi there! I'm your **Invoice Validation Assistant**. I'm here to help you verify and extract information from your invoice PDFs.\n\nJust upload your invoice and I'll give you a full analysis — checking whether it's valid, pulling out the key details, and flagging anything that needs attention. How can I help you today?",
-  },
-  {
-    patterns: ["what can you do", "what do you do", "your capabilities", "help", "how does this work", "how does it work"],
-    response:
-      "🤖 Here's what I can do for you:\n\n• **Read** your invoice and pull out key information\n• **Check** that your invoice is complete and correctly filled\n• **Highlight** anything missing or unclear\n• **Summarise** line items and totals\n• **Identify** the type of document you've uploaded\n\nSimply upload a PDF and I'll get to work instantly!",
-  },
-  {
-    patterns: ["what is invoice validation", "what is validation", "invoice validation"],
-    response:
-      "📋 **Invoice Checking** is the process of:\n\n1. Confirming the document is a genuine invoice\n2. Making sure all required details are present (invoice number, date, supplier, totals)\n3. Verifying the amounts add up correctly\n4. Flagging any missing important details like GST or PAN numbers\n5. Giving each piece of information a reliability score\n\nUpload your PDF and I'll check it right away!",
-  },
-  {
-    patterns: ["what fields", "which fields", "what information", "what data", "what does it extract"],
-    response:
-      "🔍 I can read the following details from your invoice:\n\n**Reference:** Invoice number, date, due date\n**Parties:** Supplier name, your name\n**Addresses:** Billing address, delivery address\n**Contact:** Phone number, email\n**Tax Details:** GST number, PAN number\n**Bank Info:** Loan account number, bank name, IFSC code\n**Amounts:** Currency, subtotal, tax amount, total amount\n**Items:** Description, quantity, unit price, amount\n\nReady to upload your invoice?",
-  },
-  {
-    patterns: ["pdf", "upload pdf", "how to upload", "how do i upload", "upload invoice"],
-    response:
-      "📤 Uploading is easy!\n\n1. **Drag & drop** your invoice PDF onto the upload area on the left, OR\n2. **Click** the upload area to browse your files\n3. Once selected, click **\"Analyse Invoice →\"** to process it\n\nI only accept PDF files. Make sure your invoice is saved as a PDF before uploading.",
-  },
-  {
-    patterns: ["gst", "gst number", "gst validation", "gstin"],
-    response:
-      "🏛️ **GST Number Check:** I read the GSTIN (GST Identification Number) from your invoice.\n\nA valid GSTIN is 15 characters long — for example: **22AAAAA0000A1Z5**\n\nIf the GST number is on your invoice, I'll read it and rate how clearly it was detected. If it's missing or looks incorrect, I'll flag it in the results.",
-  },
-  {
-    patterns: ["how long", "how much time", "processing time", "how fast", "speed"],
-    response:
-      "⚡ Results are near-instant!\n\n• **Upload:** A few seconds depending on file size\n• **Reading:** ~2–5 seconds using AI\n• **Checking:** Immediate after reading\n\nMost invoices are fully processed in under 10 seconds.",
-  },
-  {
-    patterns: ["is it secure", "security", "safe", "data privacy", "privacy", "confidential"],
-    response:
-      "🔒 **Your Data is Safe:**\n\nYour invoice is stored securely and is not shared with anyone outside this system. Each file is saved with a unique reference to keep it organised.\n\nIf you have any concerns about how your data is handled, please contact your system administrator.",
-  },
-  {
-    patterns: ["error", "failed", "not working", "issue", "problem", "broken"],
-    response:
-      "🔧 **Having trouble? Try these steps:**\n\n• Make sure the file is a valid **PDF** (not a scanned image saved as PDF)\n• Keep the file size reasonable (under 10MB is ideal)\n• Check your internet connection and try again\n• Click **Try Again** if the upload didn't go through\n\nIf the problem continues, please contact support.",
-  },
-  {
-    patterns: ["confidence", "confidence score", "accuracy", "how accurate"],
-    response:
-      "📊 **Reliability Scores:**\n\nEvery piece of information gets a reliability score from 0–100:\n\n• **90–100:** Very clear — high confidence\n• **70–89:** Clear — minor uncertainty\n• **50–69:** Worth a second look\n• **Below 50:** Unclear — the text may be hard to read or partially visible\n\nThe overall score is the average across all detected fields.",
-  },
-  {
-    patterns: ["supported formats", "file types", "formats", "what file"],
-    response:
-      "📁 Currently I support **PDF files only**.\n\nFor best results:\n• Use a PDF that was saved from a word processor (not a scanned photo)\n• Make sure the PDF is not password-protected\n• Standard invoice layouts work best\n\nSupport for images and scanned documents is planned for future updates.",
-  },
-  {
-    patterns: ["thank", "thanks", "thank you", "awesome", "great", "nice", "cool", "perfect", "excellent"],
-    response:
-      "😊 You're welcome! Happy to help.\n\nFeel free to upload an invoice anytime and I'll check it for you. Is there anything else you'd like to know?",
-  },
-  {
-    patterns: ["bye", "goodbye", "see you", "exit", "quit"],
-    response: "👋 Goodbye! Come back anytime you need help with your invoices. Have a great day!",
-  },
+const DECISION_META = {
+  auto_approve:     { icon: "🟢", label: "Approved — looks good!",         color: "#28c840" },
+  flag_for_review:  { icon: "🟡", label: "Needs a quick check",            color: "#ffbd2e" },
+  request_resubmit: { icon: "🟠", label: "Please send a corrected copy",   color: "#f5a623" },
+  reject_document:  { icon: "🔴", label: "Cannot be processed",            color: "#e05c5c" },
+};
+
+// Human-readable step labels (no agent/pipeline jargon)
+const PIPELINE_STEPS = [
+  { key: "upload",    icon: "📤", label: "Saving your file"      },
+  { key: "read",      icon: "🔍", label: "Reading the document"  },
+  { key: "check",     icon: "✅", label: "Checking all fields"   },
+  { key: "decision",  icon: "📊", label: "Building your report"  },
 ];
 
-// ── Bot response logic ───────────────────────────────────────────────────────
-function getBotResponse(userMessage, uploadStatus, uploadResult) {
-  const msg = userMessage.toLowerCase().trim();
+const WELCOME_MESSAGE =
+  "👋 Hi! I'm your **Invoice Assistant**.\n\n" +
+  "Here's how to get started:\n" +
+  "  • **Drop a PDF invoice** onto the area on the left, or click to browse\n" +
+  "  • Click **\"Check My Invoice →\"** — I'll read it and tell you what I find\n" +
+  "  • Results appear here in about 15 seconds\n\n" +
+  "You can also ask me anything about invoices, GST numbers, or how this works!";
 
-  // Context-aware responses after a successful upload
-  if (uploadStatus === STATUS.SUCCESS && uploadResult) {
-    if (
-      msg.includes("result") ||
-      msg.includes("show")   ||
-      msg.includes("what did you find") ||
-      msg.includes("output") ||
-      msg.includes("extracted")
-    ) {
-      return (
-        `✅ **Invoice Received!** Here's a summary:\n\n` +
-        `• **Reference ID:** ${uploadResult.file_id}\n` +
-        `• **File Name:** ${uploadResult.saved_as}\n` +
-        `• **Size:** ${formatBytes(uploadResult.size_bytes)}\n` +
-        `• **Received at:** ${new Date(uploadResult.uploaded_at).toLocaleString()}\n\n` +
-        `Your invoice is ready for analysis.`
-      );
-    }
-    if (msg.includes("valid") || msg.includes("ok") || msg.includes("good")) {
-      return (
-        `✅ Your invoice **${uploadResult.original_name}** was successfully received.\n\n` +
-        `It has been saved with reference ID **${uploadResult.file_id}** and is ready for the next step.`
-      );
-    }
-  }
+const SUGGESTIONS = [
+  "What can you do?",
+  "What does 'needs a check' mean?",
+  "What info do you read from invoices?",
+  "How do I upload a file?",
+  "What is a GST number?",
+];
 
-  // Context-aware responses after a failed upload
-  if (uploadStatus === STATUS.ERROR) {
-    if (
-      msg.includes("why")    ||
-      msg.includes("error")  ||
-      msg.includes("failed") ||
-      msg.includes("problem")
-    ) {
-      return (
-        "❌ The upload didn't go through. This could be because:\n\n" +
-        "• Your internet connection was interrupted\n" +
-        "• The file is too large\n" +
-        "• There was a temporary issue with the service\n\n" +
-        "Please check your connection and click **Try Again**."
-      );
-    }
-  }
 
-  // Check FAQ patterns
-  for (const faq of FAQ) {
-    for (const pattern of faq.patterns) {
-      if (msg.includes(pattern)) return faq.response;
-    }
-  }
+// ── Utilities ────────────────────────────────────────────────────
 
-  // Default fallback
-  return (
-    "🤔 I'm not sure I understood that. Here are some things I can help with:\n\n" +
-    "• **Upload an invoice** — drag & drop a PDF to get started\n" +
-    "• **Learn about invoice checking** — ask \"what is invoice validation?\"\n" +
-    "• **See what I can read** — ask \"what information can you extract?\"\n" +
-    "• **Get help** — ask \"why did my upload fail?\"\n\n" +
-    "Or just say **hi** to get started! 😊"
-  );
+function formatBytes(b) {
+  if (b < 1024)        return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-// ── Markdown renderer (bold + bullets + line breaks) ────────────────────────
-function RenderMessage({ text }) {
+function formatDate(iso) {
+  return new Date(iso).toLocaleString();
+}
+
+/**
+ * Confidence bar — purely CSS, no external lib.
+ * colour: green ≥85, amber 60-84, red <60
+ */
+function ConfidenceBar({ value }) {
+  const pct   = Math.min(100, Math.max(0, value ?? 0));
+  const color = pct >= 85 ? "#28c840" : pct >= 60 ? "#ffbd2e" : "#e05c5c";
   return (
-    <div>
-      {text.split("\n").map((line, i) => {
-        const parts = line.split(/\*\*(.*?)\*\*/g);
-        const rendered = parts.map((part, j) =>
-          j % 2 === 1 ? <strong key={j}>{part}</strong> : part
-        );
-        return (
-          <p key={i} className={line.trimStart().startsWith("•") ? "chat-bullet" : "chat-line"}>
-            {rendered}
-          </p>
-        );
-      })}
+    <div className="conf-bar-wrap" title={`${pct}% confidence`}>
+      <div className="conf-bar-track">
+        <div className="conf-bar-fill" style={{ width: `${pct}%`, background: color }} />
+      </div>
+      <span className="conf-bar-label" style={{ color }}>{pct}%</span>
     </div>
   );
 }
 
-// ── Theme Toggle ─────────────────────────────────────────────────────────────
+/**
+ * Inline SVG bar chart — shows top extracted fields by confidence.
+ * No matplotlib needed on frontend; chart image comes from backend (/api/invoices/chart).
+ * We draw it in SVG directly so it works without any extra library.
+ */
+function ConfidenceChart({ fields }) {
+  if (!fields || Object.keys(fields).length === 0) return null;
+
+  const entries = Object.entries(fields)
+    .map(([k, v]) => ({ label: k.replace(/_/g, " "), value: v.confidence ?? 0 }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8);
+
+  const W = 340, BAR_H = 22, GAP = 8, LABEL_W = 110, PAD = 12;
+  const H = entries.length * (BAR_H + GAP) + PAD * 2;
+  const CHART_W = W - LABEL_W - PAD;
+
+  return (
+    <div className="chart-wrap">
+      <p className="chart-title">📊 Field Confidence Scores</p>
+      <svg width={W} height={H} style={{ overflow: "visible" }}>
+        {entries.map(({ label, value }, i) => {
+          const y    = PAD + i * (BAR_H + GAP);
+          const barW = Math.max(4, (value / 100) * CHART_W);
+          const fill = value >= 85 ? "#28c840" : value >= 60 ? "#ffbd2e" : "#e05c5c";
+          return (
+            <g key={label}>
+              <text
+                x={LABEL_W - 6}
+                y={y + BAR_H / 2 + 4}
+                textAnchor="end"
+                fontSize={10}
+                fill="var(--text-secondary)"
+                style={{ textTransform: "capitalize" }}
+              >
+                {label.length > 15 ? label.slice(0, 14) + "…" : label}
+              </text>
+              <rect
+                x={LABEL_W}
+                y={y}
+                width={CHART_W}
+                height={BAR_H}
+                rx={4}
+                fill="var(--border)"
+                opacity={0.5}
+              />
+              <rect
+                x={LABEL_W}
+                y={y}
+                width={barW}
+                height={BAR_H}
+                rx={4}
+                fill={fill}
+                opacity={0.85}
+              />
+              <text
+                x={LABEL_W + barW + 4}
+                y={y + BAR_H / 2 + 4}
+                fontSize={10}
+                fill={fill}
+                fontWeight={600}
+              >
+                {value}%
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+/** Build the friendly summary shown in chat after analysis. */
+function buildPipelineSummary(report) {
+  // orchestrator returns: extractor_agent, validator_agent, exception_agent
+  const extraction  = report?.extractor_agent ?? {};
+  const exception   = report?.exception_agent  ?? {};
+
+  const decision = exception.final_decision ?? "unknown";
+  const meta     = DECISION_META[decision] ?? { icon: "⚪", label: decision };
+  const counts   = exception.exception_counts ?? {};
+  const fields   = extraction.extracted_fields ?? {};
+  const notes    = exception.processing_notes ?? [];
+
+  // Friendly field lines — no jargon
+  const fieldLines = Object.entries(fields)
+    .slice(0, 8)
+    .map(([k, v]) => `  • **${k.replace(/_/g, " ")}:** ${v.value}`)
+    .join("\n");
+
+  // Friendly issue lines — hide severity codes
+  const issues = (exception.exceptions ?? []).slice(0, 4)
+    .map((ex) => `  • ${ex.reason}`)
+    .join("\n");
+
+  const totalIssues = (counts.CRITICAL ?? 0) + (counts.HIGH ?? 0) +
+                      (counts.MEDIUM ?? 0)   + (counts.LOW ?? 0);
+
+  const issuesSummary = totalIssues === 0
+    ? "✅ No issues found."
+    : `Found **${totalIssues} thing${totalIssues > 1 ? "s" : ""}** to look at.`;
+
+  return (
+    `✅ **Done! Here's what I found:**\n\n` +
+    `**Result:** ${meta.icon} ${meta.label}\n` +
+    `**Overall quality:** ${extraction.overall_confidence ?? "—"}%\n\n` +
+    `${issuesSummary}\n` +
+    (issues ? `\n${issues}\n` : "") +
+    (fieldLines ? `\n**What I read from your invoice:**\n${fieldLines}\n\n` : "") +
+    (exception.audit_summary ? `📝 ${exception.audit_summary}\n\n` : "") +
+    (notes.length ? `**What to do next:**\n${notes.map((n) => `  • ${n}`).join("\n")}\n\n` : "") +
+    `Ask me anything about these results! 💬`
+  );
+}
+
+
+// ── Sub-components ───────────────────────────────────────────────
+
 function ThemeToggle({ theme, onToggle }) {
   return (
-    <button
-      className="theme-toggle"
-      onClick={onToggle}
-      title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-      aria-label="Toggle theme"
-    >
+    <button className="theme-toggle" onClick={onToggle} aria-label="Toggle theme">
       <span className="theme-toggle-track">
         <span className="theme-toggle-thumb">{theme === "dark" ? "🌙" : "☀️"}</span>
       </span>
@@ -181,15 +203,6 @@ function ThemeToggle({ theme, onToggle }) {
   );
 }
 
-// ── Quick Suggestions ────────────────────────────────────────────────────────
-const SUGGESTIONS = [
-  "What can you do?",
-  "What details can you read?",
-  "How do I upload?",
-  "Is my data secure?",
-];
-
-// ── Result Row ────────────────────────────────────────────────────────────────
 function ResultRow({ label, value }) {
   return (
     <div className="result-row">
@@ -199,41 +212,77 @@ function ResultRow({ label, value }) {
   );
 }
 
-// ── Utility helpers ───────────────────────────────────────────────────────────
-function formatBytes(bytes) {
-  if (bytes < 1024)            return `${bytes} B`;
-  if (bytes < 1024 * 1024)     return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+/** Render markdown-lite: **bold** and bullet lines. */
+function RenderMessage({ text }) {
+  return (
+    <div>
+      {text.split("\n").map((line, i) => {
+        const parts = line.split(/\*\*(.*?)\*\*/g);
+        const rendered = parts.map((part, j) =>
+          j % 2 === 1 ? <strong key={j}>{part}</strong> : part
+        );
+        const isBullet = line.trimStart().startsWith("•") || line.trimStart().startsWith("  •");
+        return (
+          <p key={i} className={isBullet ? "chat-bullet" : "chat-line"}>
+            {rendered}
+          </p>
+        );
+      })}
+    </div>
+  );
 }
 
-function formatDate(iso) {
-  return new Date(iso).toLocaleString();
+/**
+ * Animated pipeline progress stepper.
+ * activeStep: 0=upload, 1=read, 2=check, 3=decision, 4=done
+ */
+function PipelineProgress({ activeStep }) {
+  return (
+    <div className="pipeline-progress">
+      {PIPELINE_STEPS.map((step, i) => {
+        const done    = i < activeStep;
+        const active  = i === activeStep;
+        return (
+          <div key={step.key} className="pipeline-step-wrap">
+            <div className={`pipeline-node ${done ? "done" : active ? "active" : "pending"}`}>
+              {done ? "✓" : step.icon}
+            </div>
+            <span className={`pipeline-step-label ${active ? "active" : done ? "done" : ""}`}>
+              {step.label}
+            </span>
+            {i < PIPELINE_STEPS.length - 1 && (
+              <div className={`pipeline-connector ${done ? "done" : ""}`} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
-// ── Main App ──────────────────────────────────────────────────────────────────
+
+// ── Main App ─────────────────────────────────────────────────────
+
 export default function App() {
-  const [pdfFile,   setPdfFile]   = useState(null);
-  const [pdfUrl,    setPdfUrl]    = useState(null);
-  const [isDragging, setIsDragging] = useState(false);
-
+  const [pdfFile,        setPdfFile]        = useState(null);
+  const [pdfUrl,         setPdfUrl]         = useState(null);
+  const [isDragging,     setIsDragging]     = useState(false);
   const [uploadStatus,   setUploadStatus]   = useState(STATUS.IDLE);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadResult,   setUploadResult]   = useState(null);
+  const [pipelineResult, setPipelineResult] = useState(null);
   const [uploadError,    setUploadError]    = useState(null);
-
-  const [rightTab, setRightTab] = useState("chat");
-  const [theme,    setTheme]    = useState("dark");
+  const [pipelineStep,   setPipelineStep]   = useState(0); // 0-4
 
   const [messages,    setMessages]    = useState([
-    {
-      id:   1,
-      role: "bot",
-      text: "👋 Hi! I'm your **Invoice Validation Assistant**.\n\nUpload an invoice PDF and I'll read and check all its details — or ask me anything about the process!",
-      time: new Date(),
-    },
+    { id: 1, role: "bot", text: WELCOME_MESSAGE, time: new Date() },
   ]);
-  const [inputValue, setInputValue] = useState("");
-  const [isTyping,   setIsTyping]   = useState(false);
+  const [inputValue,  setInputValue]  = useState("");
+  const [isTyping,    setIsTyping]    = useState(false);
+  const [chatHistory, setChatHistory] = useState([]);
+
+  const [theme,    setTheme]    = useState("dark");
+  const [rightTab, setRightTab] = useState("chat");
 
   const fileInputRef    = useRef(null);
   const chatEndRef      = useRef(null);
@@ -241,46 +290,60 @@ export default function App() {
   const inputRef        = useRef(null);
   const userScrolledUp  = useRef(false);
 
-  // Apply theme to document root
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
 
-  // Smart auto-scroll: only fires if user is already near the bottom
+  const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
+
   useEffect(() => {
     if (!userScrolledUp.current) {
       chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [messages, isTyping]);
 
-  // Track whether user has scrolled up — pauses auto-scroll, resumes at bottom
   const handleChatScroll = () => {
     const el = chatMessagesRef.current;
     if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    userScrolledUp.current = distanceFromBottom > 60;
+    userScrolledUp.current = el.scrollHeight - el.scrollTop - el.clientHeight > 60;
   };
 
-  const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
+  const addBotMessage = useCallback((text) => {
+    setMessages((prev) => [
+      ...prev,
+      { id: Date.now(), role: "bot", text, time: new Date() },
+    ]);
+  }, []);
 
-  // ── File handling ────────────────────────────────────────────────────────
-  const handleFile = (file) => {
-    if (!file || file.type !== "application/pdf") return;
-    setPdfFile(file);
-    setPdfUrl(URL.createObjectURL(file));
-    setUploadStatus(STATUS.IDLE);
-    setUploadProgress(0);
-    setUploadResult(null);
-    setUploadError(null);
-    addBotMessage(
-      `📄 I can see you've selected **${file.name}** (${formatBytes(file.size)}).\n\nClick **"Analyse Invoice →"** whenever you're ready!`
-    );
-    setRightTab("chat");
-  };
+  const addToHistory = useCallback((role, content) => {
+    setChatHistory((prev) => [...prev, { role, content }]);
+  }, []);
 
-  const handleDrop       = (e) => { e.preventDefault(); setIsDragging(false); handleFile(e.dataTransfer.files[0]); };
-  const handleDragOver   = (e) => { e.preventDefault(); setIsDragging(true); };
-  const handleDragLeave  = ()  => setIsDragging(false);
+
+  // ── File handling ──────────────────────────────────────────────
+  const handleFile = useCallback(
+    (file) => {
+      if (!file || file.type !== "application/pdf") return;
+      setPdfFile(file);
+      setPdfUrl(URL.createObjectURL(file));
+      setUploadStatus(STATUS.IDLE);
+      setUploadProgress(0);
+      setUploadResult(null);
+      setPipelineResult(null);
+      setUploadError(null);
+      setPipelineStep(0);
+      setRightTab("chat");
+      addBotMessage(
+        `📄 Got it! I can see **${file.name}** (${formatBytes(file.size)}).\n\n` +
+        `Click **"Check My Invoice →"** and I'll read it for you!`
+      );
+    },
+    [addBotMessage]
+  );
+
+  const handleDrop      = (e) => { e.preventDefault(); setIsDragging(false); handleFile(e.dataTransfer.files[0]); };
+  const handleDragOver  = (e) => { e.preventDefault(); setIsDragging(true); };
+  const handleDragLeave = ()  => setIsDragging(false);
   const handleInputChange = (e) => handleFile(e.target.files[0]);
 
   const handleRemove = () => {
@@ -289,80 +352,245 @@ export default function App() {
     setUploadStatus(STATUS.IDLE);
     setUploadProgress(0);
     setUploadResult(null);
+    setPipelineResult(null);
     setUploadError(null);
+    setPipelineStep(0);
     if (fileInputRef.current) fileInputRef.current.value = "";
-    addBotMessage("🗑️ Invoice removed. Feel free to upload a new one whenever you're ready!");
+    addBotMessage("🗑️ Invoice removed. Drop a new one whenever you're ready!");
   };
 
-  // ── Upload ───────────────────────────────────────────────────────────────
-  const handleUpload = async () => {
+
+  // ── Upload + Analyse ───────────────────────────────────────────
+  const handleUpload = useCallback(async () => {
     if (!pdfFile) return;
+
+    // Step 0 — upload
     setUploadStatus(STATUS.UPLOADING);
     setUploadProgress(0);
     setUploadError(null);
-    addBotMessage(`⏳ Checking **${pdfFile.name}**… I'll let you know as soon as it's done!`);
+    setPipelineStep(0);
+    addBotMessage(`⏳ Saving your file…`);
+
+    let uploadMeta;
+    try {
+      uploadMeta = await uploadInvoice(pdfFile, (pct) => setUploadProgress(pct));
+      setUploadResult(uploadMeta);
+    } catch (err) {
+      setUploadStatus(STATUS.ERROR);
+      setUploadError(err.message);
+      addBotMessage(`❌ **We couldn't save your file.** Please check your connection and try again.`);
+      return;
+    }
+
+    addBotMessage(
+      `✅ File saved successfully!\n` +
+      `  • Reference: **${uploadMeta.file_id}**\n` +
+      `  • Size: ${formatBytes(uploadMeta.size_bytes)}\n\n` +
+      `⏳ Now reading your invoice — this takes about 15 seconds…`
+    );
+
+    // Steps 1-3 — analyse
+    setUploadStatus(STATUS.ANALYSING);
+    setPipelineStep(1);
+
+    // Simulate step progression while API call runs
+    const stepTimer1 = setTimeout(() => setPipelineStep(2), 5000);
+    const stepTimer2 = setTimeout(() => setPipelineStep(3), 11000);
 
     try {
-      const result = await uploadInvoice(pdfFile, (pct) => setUploadProgress(pct));
-      setUploadResult(result);
+      const report = await analyseInvoice(uploadMeta.path);
+      clearTimeout(stepTimer1);
+      clearTimeout(stepTimer2);
+      setPipelineStep(4);
+      setPipelineResult(report);
       setUploadStatus(STATUS.SUCCESS);
-      setRightTab("chat");
-      addBotMessage(
-        `✅ **Invoice received successfully!**\n\n` +
-        `• **Reference ID:** ${result.file_id}\n` +
-        `• **File Name:** ${result.saved_as}\n` +
-        `• **Size:** ${formatBytes(result.size_bytes)}\n` +
-        `• **Received at:** ${new Date(result.uploaded_at).toLocaleString()}\n\n` +
-        `Your invoice is ready. You can ask me about the results or upload another one!`
-      );
+
+      const summary = buildPipelineSummary(report);
+      addBotMessage(summary);
+      addToHistory("assistant", summary);
     } catch (err) {
-      setUploadError(err.message);
+      clearTimeout(stepTimer1);
+      clearTimeout(stepTimer2);
       setUploadStatus(STATUS.ERROR);
+      const detail = err.response?.data?.detail ?? err.message;
+      setUploadError(detail);
       addBotMessage(
-        `❌ **Something went wrong:** ${err.message}\n\nPlease check your connection and try again. Click **Try Again** or ask me for help.`
+        `❌ **Something went wrong while reading your invoice.**\n\n` +
+        `This usually happens with scanned image PDFs. ` +
+        `Please try uploading a PDF where the text can be selected/copied.`
       );
     }
-  };
+  }, [pdfFile, addBotMessage, addToHistory]);
 
-  // ── Chat helpers ─────────────────────────────────────────────────────────
-  const addBotMessage = (text) => {
-    setMessages((prev) => [...prev, { id: Date.now(), role: "bot", text, time: new Date() }]);
-  };
 
-  const sendMessage = (text) => {
-    const trimmed = (text || inputValue).trim();
-    if (!trimmed) return;
+  // ── Chat ───────────────────────────────────────────────────────
+  const sendMessage = useCallback(
+    async (text) => {
+      const trimmed = (text ?? inputValue).trim();
+      if (!trimmed || isTyping) return;
 
-    setMessages((prev) => [...prev, { id: Date.now(), role: "user", text: trimmed, time: new Date() }]);
-    setInputValue("");
-    setIsTyping(true);
+      setMessages((prev) => [
+        ...prev,
+        { id: Date.now(), role: "user", text: trimmed, time: new Date() },
+      ]);
+      setInputValue("");
+      setIsTyping(true);
+      addToHistory("user", trimmed);
 
-    setTimeout(() => {
-      const reply = getBotResponse(trimmed, uploadStatus, uploadResult);
-      setIsTyping(false);
-      setMessages((prev) => [...prev, { id: Date.now() + 1, role: "bot", text: reply, time: new Date() }]);
-    }, 600 + Math.random() * 400);
-  };
+      try {
+        const reply = await sendChatMessage(trimmed, chatHistory, pipelineResult);
+        setIsTyping(false);
+        setMessages((prev) => [
+          ...prev,
+          { id: Date.now() + 1, role: "bot", text: reply, time: new Date() },
+        ]);
+        addToHistory("assistant", reply);
+      } catch (err) {
+        setIsTyping(false);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now() + 1,
+            role: "bot",
+            text: `⚠️ Sorry, I couldn't reply right now. Please try again.`,
+            time: new Date(),
+          },
+        ]);
+      }
+    },
+    [inputValue, isTyping, chatHistory, pipelineResult, addToHistory]
+  );
 
   const handleKeyDown = (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   };
 
-  // ── Primary action button label ──────────────────────────────────────────
+
+  // ── Button labels ──────────────────────────────────────────────
   const primaryBtnLabel = () => {
-    if (!pdfFile)                              return "Get Started →";
-    if (uploadStatus === STATUS.IDLE)          return "Analyse Invoice →";
-    if (uploadStatus === STATUS.UPLOADING)     return `Checking… ${uploadProgress}%`;
-    if (uploadStatus === STATUS.SUCCESS)       return "Check Another →";
-    if (uploadStatus === STATUS.ERROR)         return "Try Again →";
+    if (!pdfFile)                          return "Get Started →";
+    if (uploadStatus === STATUS.IDLE)      return "Check My Invoice →";
+    if (uploadStatus === STATUS.UPLOADING) return `Saving… ${uploadProgress}%`;
+    if (uploadStatus === STATUS.ANALYSING) return "Reading your invoice…";
+    if (uploadStatus === STATUS.SUCCESS)   return "Check Another →";
+    if (uploadStatus === STATUS.ERROR)     return "Try Again →";
+    return "Check My Invoice →";
   };
 
-  // ── Right panel body ─────────────────────────────────────────────────────
+  const isPrimaryDisabled =
+    uploadStatus === STATUS.UPLOADING || uploadStatus === STATUS.ANALYSING;
+
+  const handlePrimaryClick = () => {
+    if (uploadStatus === STATUS.SUCCESS) handleRemove();
+    else if (pdfFile) handleUpload();
+    else fileInputRef.current?.click();
+  };
+
+
+  // ── Info tab ───────────────────────────────────────────────────
+  const renderInfoTab = () => {
+    if (uploadStatus === STATUS.IDLE) {
+      return (
+        <div className="placeholder-content">
+          <div className="placeholder-icon">📤</div>
+          <p className="placeholder-label">Ready to go</p>
+          <p className="placeholder-sub">Click "Check My Invoice" to start</p>
+        </div>
+      );
+    }
+
+    if (uploadStatus === STATUS.UPLOADING) {
+      return (
+        <div className="placeholder-content">
+          <div className="pulse-ring" />
+          <p className="placeholder-label uploading">Saving your file… {uploadProgress}%</p>
+          <div className="progress-bar-wrap">
+            <div className="progress-bar-fill" style={{ width: `${uploadProgress}%` }} />
+          </div>
+        </div>
+      );
+    }
+
+    if (uploadStatus === STATUS.ANALYSING) {
+      return (
+        <div className="placeholder-content">
+          <div className="pulse-ring" />
+          <p className="placeholder-label uploading">Reading your invoice…</p>
+          <p className="placeholder-sub" style={{ marginBottom: 16 }}>
+            Please wait — this takes about 15 seconds
+          </p>
+          <PipelineProgress activeStep={pipelineStep} />
+        </div>
+      );
+    }
+
+    if (uploadStatus === STATUS.SUCCESS && uploadResult) {
+      const extraction = pipelineResult?.extractor_agent ?? {};
+      const exception  = pipelineResult?.exception_agent  ?? {};
+      const decision   = exception.final_decision;
+      const meta       = decision ? DECISION_META[decision] : null;
+      const fields     = extraction.extracted_fields ?? {};
+      const counts     = exception.exception_counts ?? {};
+
+      return (
+        <div className="info-success-wrap">
+          <div className="success-icon">✅</div>
+          <p className="placeholder-label success-text">Analysis Complete</p>
+
+          <div className="result-card">
+            <ResultRow label="Reference"  value={uploadResult.file_id} />
+            <ResultRow label="File"       value={pdfFile?.name ?? uploadResult.saved_as} />
+            <ResultRow label="Size"       value={formatBytes(uploadResult.size_bytes)} />
+            <ResultRow label="Received"   value={formatDate(uploadResult.uploaded_at)} />
+            {meta && <ResultRow label="Result" value={`${meta.icon} ${meta.label}`} />}
+            <ResultRow label="Quality"    value={`${extraction.overall_confidence ?? "—"}%`} />
+          </div>
+
+          {/* Exception count badges */}
+          {(counts.CRITICAL > 0 || counts.HIGH > 0 || counts.MEDIUM > 0 || counts.LOW > 0) && (
+            <div className="exception-badges">
+              {counts.CRITICAL > 0 && <span className="exc-badge critical">{counts.CRITICAL} Critical</span>}
+              {counts.HIGH     > 0 && <span className="exc-badge high">{counts.HIGH} High</span>}
+              {counts.MEDIUM   > 0 && <span className="exc-badge medium">{counts.MEDIUM} Medium</span>}
+              {counts.LOW      > 0 && <span className="exc-badge low">{counts.LOW} Low</span>}
+            </div>
+          )}
+
+          {/* Confidence chart */}
+          <ConfidenceChart fields={fields} />
+
+          {/* Per-field confidence bars */}
+          {Object.keys(fields).length > 0 && (
+            <div className="field-conf-list">
+              <p className="field-conf-title">Field breakdown</p>
+              {Object.entries(fields).slice(0, 8).map(([k, v]) => (
+                <div key={k} className="field-conf-row">
+                  <span className="field-conf-name">{k.replace(/_/g, " ")}</span>
+                  <ConfidenceBar value={v.confidence} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    if (uploadStatus === STATUS.ERROR) {
+      return (
+        <div className="placeholder-content">
+          <div className="placeholder-icon">❌</div>
+          <p className="placeholder-label error-text">Something went wrong</p>
+          <p className="placeholder-sub">{uploadError}</p>
+          <button className="retry-btn" onClick={handleUpload}>Try Again</button>
+        </div>
+      );
+    }
+    return null;
+  };
+
+
+  // ── Right body ─────────────────────────────────────────────────
   const renderRightBody = () => {
-    // Chat tab
     if (rightTab === "chat") {
       return (
         <div className="chat-panel">
@@ -378,7 +606,6 @@ export default function App() {
                 </div>
               </div>
             ))}
-
             {isTyping && (
               <div className="chat-bubble-wrap bot">
                 <div className="chat-avatar">🤖</div>
@@ -393,9 +620,7 @@ export default function App() {
           {messages.length <= 2 && (
             <div className="chat-suggestions">
               {SUGGESTIONS.map((s) => (
-                <button key={s} className="suggestion-chip" onClick={() => sendMessage(s)}>
-                  {s}
-                </button>
+                <button key={s} className="suggestion-chip" onClick={() => sendMessage(s)}>{s}</button>
               ))}
             </div>
           )}
@@ -408,11 +633,12 @@ export default function App() {
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
+              disabled={isTyping}
             />
             <button
               className="chat-send-btn"
               onClick={() => sendMessage()}
-              disabled={!inputValue.trim()}
+              disabled={!inputValue.trim() || isTyping}
               title="Send"
             >
               ➤
@@ -422,7 +648,6 @@ export default function App() {
       );
     }
 
-    // Preview tab
     if (rightTab === "preview") {
       if (!pdfFile) {
         return (
@@ -440,67 +665,20 @@ export default function App() {
       );
     }
 
-    // Info / status tab
-    if (rightTab === "info") {
-      if (uploadStatus === STATUS.IDLE) {
-        return (
-          <div className="placeholder-content">
-            <div className="placeholder-icon">📤</div>
-            <p className="placeholder-label">Ready to go</p>
-            <p className="placeholder-sub">Click "Analyse Invoice" to check your document</p>
-          </div>
-        );
-      }
-      if (uploadStatus === STATUS.UPLOADING) {
-        return (
-          <div className="placeholder-content">
-            <div className="pulse-ring" />
-            <p className="placeholder-label uploading">Checking your invoice… {uploadProgress}%</p>
-            <div className="progress-bar-wrap">
-              <div className="progress-bar-fill" style={{ width: `${uploadProgress}%` }} />
-            </div>
-          </div>
-        );
-      }
-      if (uploadStatus === STATUS.SUCCESS) {
-        return (
-          <div className="placeholder-content">
-            <div className="success-icon">✅</div>
-            <p className="placeholder-label success-text">Invoice Received</p>
-            <div className="result-card">
-              <ResultRow label="Reference ID" value={uploadResult.file_id} />
-              <ResultRow label="File Name"    value={uploadResult.saved_as} />
-              <ResultRow label="Size"         value={formatBytes(uploadResult.size_bytes)} />
-              <ResultRow label="Received at"  value={formatDate(uploadResult.uploaded_at)} />
-            </div>
-          </div>
-        );
-      }
-      if (uploadStatus === STATUS.ERROR) {
-        return (
-          <div className="placeholder-content">
-            <div className="placeholder-icon">❌</div>
-            <p className="placeholder-label error-text">Something went wrong</p>
-            <p className="placeholder-sub">{uploadError}</p>
-            <button className="retry-btn" onClick={handleUpload}>Try Again</button>
-          </div>
-        );
-      }
-    }
+    if (rightTab === "info") return renderInfoTab();
+    return null;
   };
 
-  // ── Render ───────────────────────────────────────────────────────────────
+
+  // ── Render ─────────────────────────────────────────────────────
   return (
     <div className="app">
-      {/* Navbar */}
       <nav className="navbar">
-        <div className="nav-logo">
-          <img src={wnsLogo} alt="WNS" className="wns-logo" />
-          <span className="nav-logo-divider" />
-        </div>
         <div className="nav-brand">
           <span className="brand-icon">⚡</span>
-          <span className="brand-text">invoice<span className="brand-accent">Agent</span></span>
+          <span className="brand-text">
+            invoice<span className="brand-accent">Agent</span>
+          </span>
         </div>
         <div className="nav-search">
           <span className="search-icon">🔍</span>
@@ -508,21 +686,21 @@ export default function App() {
           <kbd>Ctrl K</kbd>
         </div>
         <div className="nav-actions">
-          <button className="nav-btn" title="GitHub">⬡</button>
-          <button className="nav-btn" title="Settings">⚙</button>
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
         </div>
       </nav>
 
-      {/* Main layout */}
       <main className="main">
-        {/* Left Panel */}
+        {/* ── Left Panel ── */}
         <section className="left-panel">
           <div className="hero-text">
-            <h1>Extract from<br /><span className="highlight">Invoices</span></h1>
+            <h1>
+              Check your<br />
+              <span className="highlight">Invoices</span>
+            </h1>
             <p className="hero-sub">
-              AI-powered assistant that reads, checks, and verifies your
-              invoice details — instantly and accurately.
+              Upload any invoice PDF and I'll read it, check every field,
+              and tell you exactly what's there — in plain language.
             </p>
           </div>
 
@@ -559,35 +737,54 @@ export default function App() {
           )}
 
           <div className="cta-row">
-            <button
-              className="btn-primary"
-              onClick={pdfFile ? handleUpload : () => fileInputRef.current?.click()}
-              disabled={uploadStatus === STATUS.UPLOADING}
-            >
+            <button className="btn-primary" onClick={handlePrimaryClick} disabled={isPrimaryDisabled}>
               {primaryBtnLabel()}
             </button>
           </div>
+
+          {/* Friendly animated progress — shown while working */}
+          {(uploadStatus === STATUS.UPLOADING || uploadStatus === STATUS.ANALYSING) && (
+            <div className="pipeline-status-outer">
+              <PipelineProgress activeStep={
+                uploadStatus === STATUS.UPLOADING ? 0 : pipelineStep
+              } />
+            </div>
+          )}
         </section>
 
-        {/* Right Panel */}
+        {/* ── Right Panel ── */}
         <section className="right-panel">
           <div className="right-box">
             <div className="right-box-header">
               <span className="right-box-dot red" />
               <span className="right-box-dot yellow" />
               <span className="right-box-dot green" />
-
               <div className="right-tabs">
-                <button
-                  className={`right-tab ${rightTab === "chat" ? "active" : ""}`}
-                  onClick={() => setRightTab("chat")}
-                >
-                  💬 Chat
-                </button>
+                {[
+                  { id: "chat",    label: "💬 Chat" },
+                  { id: "preview", label: "🗂️ Preview" },
+                  { id: "info",    label: "📋 Results" },
+                ].map(({ id, label }) => (
+                  <button
+                    key={id}
+                    className={`right-tab ${rightTab === id ? "active" : ""}`}
+                    onClick={() => setRightTab(id)}
+                  >
+                    {label}
+                    {id === "info" && uploadStatus === STATUS.SUCCESS && (
+                      <span className="tab-badge success" />
+                    )}
+                    {id === "info" && uploadStatus === STATUS.ERROR && (
+                      <span className="tab-badge error" />
+                    )}
+                  </button>
+                ))}
               </div>
             </div>
-
-            <div className={`right-box-body ${rightTab === "preview" && pdfFile ? "no-pad" : rightTab === "chat" ? "no-pad" : ""}`}>
+            <div className={`right-box-body ${
+              rightTab === "preview" && pdfFile ? "no-pad" :
+              rightTab === "chat"              ? "no-pad" : ""
+            }`}>
               {renderRightBody()}
             </div>
           </div>

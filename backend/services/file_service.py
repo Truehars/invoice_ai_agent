@@ -1,6 +1,14 @@
+"""
+services/file_service.py
+────────────────────────
+PDF upload, storage, text extraction, and listing helpers.
+"""
+
 import uuid
 from datetime import datetime
 from pathlib import Path
+
+import fitz  # PyMuPDF
 from fastapi import UploadFile
 
 from config import settings
@@ -9,17 +17,12 @@ UPLOAD_DIR: Path = settings.UPLOAD_DIR
 
 
 async def save_invoice_file(file: UploadFile) -> dict:
-    """
-    Save an uploaded PDF to local storage with a unique name.
-    Returns metadata dict with filename, path, size, and upload timestamp.
-    """
-    # Build a unique filename: <uuid>_<original_name>
+    """Save an uploaded PDF and return its metadata."""
     unique_id = uuid.uuid4().hex[:10]
     safe_name = file.filename.replace(" ", "_")
     saved_filename = f"{unique_id}_{safe_name}"
-    save_path: Path = UPLOAD_DIR / saved_filename
+    save_path = UPLOAD_DIR / saved_filename
 
-    # Read and write in chunks to handle large files efficiently
     content = await file.read()
     save_path.write_bytes(content)
 
@@ -34,12 +37,23 @@ async def save_invoice_file(file: UploadFile) -> dict:
     }
 
 
+def extract_text_from_pdf(file_path: str) -> str:
+    """Extract plain text from every page of a PDF using PyMuPDF."""
+    text = ""
+    with fitz.open(file_path) as doc:
+        for page in doc:
+            text += page.get_text()
+    return text.strip()
+
+
 def list_invoice_files() -> list[dict]:
-    """
-    Return metadata for all PDF files currently in local storage.
-    """
+    """Return metadata for all stored PDFs, newest first."""
     files = []
-    for f in sorted(UPLOAD_DIR.glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True):
+    for f in sorted(
+        UPLOAD_DIR.glob("*.pdf"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    ):
         stat = f.stat()
         files.append({
             "filename": f.name,

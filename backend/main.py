@@ -1,18 +1,40 @@
+"""
+main.py
+───────
+Invoice Agent — FastAPI backend
+
+Endpoints:
+  GET  /                        → health check
+  POST /api/invoices/upload     → upload PDF, return metadata
+  POST /api/invoices/analyse    → run 3-agent pipeline, return report
+  GET  /api/invoices            → list all stored invoices
+  POST /api/chat                → LLM chat with optional pipeline context
+  POST /api/invoices/chart      → generate confidence bar chart PNG (matplotlib)
+"""
+
+import io
+import uvicorn
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
-import uvicorn
+
 from config import settings
-from services.file_service import save_invoice_file, list_invoice_files
+from services.file_service import save_invoice_file, extract_text_from_pdf, list_invoice_files
+from services.chat_agent import chat_with_agent
+from orchestrator import run_pipeline_from_text
+
+
+# ─────────────────────────────────────────────────────────────────
+# APP SETUP
+# ─────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="Invoice Agent API",
-    description="Backend for Invoice Extractor — handles PDF upload, storage, and chat.",
-    version="1.1.0",
+    description="LLM-powered invoice validation — upload, extract, validate, chat.",
+    version="2.0.0",
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -22,165 +44,169 @@ app.add_middleware(
 )
 
 
-# ── Chat Q&A 
+# ─────────────────────────────────────────────────────────────────
+# REQUEST MODELS
+# ─────────────────────────────────────────────────────────────────
 
-FAQ = [
-    {
-        "patterns": ["hi", "hello", "hey", "greetings", "good morning", "good afternoon"],
-        "response": (
-            "👋 Hi there! I'm your Invoice Validation Agent. "
-            "Upload an invoice PDF and I'll validate it — extracting all key fields "
-            "and flagging any missing or suspicious data. How can I help you?"
-        ),
-    },
-    {
-        "patterns": ["what can you do", "help", "how does this work", "capabilities"],
-        "response": (
-            "🤖 I can: extract invoice fields (number, date, vendor, totals, GST, PAN, etc.), "
-            "validate document structure, flag missing fields, summarise line items, "
-            "and assign confidence scores. Just upload a PDF to get started!"
-        ),
-    },
-    {
-        "patterns": ["what fields", "which fields", "what data", "what does it extract"],
-        "response": (
-            "🔍 Extractable fields include: invoice_number, invoice_date, due_date, "
-            "vendor_name, customer_name, billing_address, shipping_address, phone_number, "
-            "email, gst_number, pan_number, bank_name, ifsc_code, currency, "
-            "subtotal, tax_amount, total_amount — plus line items."
-        ),
-    },
-    {
-        "patterns": ["gst", "gstin", "gst number"],
-        "response": (
-            "🏛️ I extract the GSTIN from your invoice. A valid GSTIN is 15 characters "
-            "(e.g. 22AAAAA0000A1Z5). If missing or malformed, it will be flagged."
-        ),
-    },
-    {
-        "patterns": ["how long", "processing time", "how fast"],
-        "response": "⚡ Most invoices are processed in under 10 seconds — upload takes ~2s, extraction ~5s.",
-    },
-    {
-        "patterns": ["secure", "security", "privacy", "confidential", "safe"],
-        "response": (
-            "🔒 Files are stored locally with a unique ID and are not shared with third parties. "
-            "For production, we recommend encrypted storage and API authentication."
-        ),
-    },
-    {
-        "patterns": ["error", "failed", "not working", "issue", "problem"],
-        "response": (
-            "🔧 Troubleshooting: ensure the file is a text-based PDF (not scanned image only), "
-            "under 10MB, and the backend is running on port 8000. Check browser console for details."
-        ),
-    },
-    {
-        "patterns": ["confidence", "accuracy", "confidence score"],
-        "response": (
-            "📊 Each field gets a score 0–100: 90–100 = very high, 70–89 = good, "
-            "50–69 = moderate (review recommended), below 50 = low (possibly unclear text)."
-        ),
-    },
-    {
-        "patterns": ["supported formats", "file types", "what file"],
-        "response": (
-            "📁 Only PDF files are supported right now. Use text-based, non-password-protected PDFs "
-            "for best results. OCR support for scanned PDFs is planned."
-        ),
-    },
-    {
-        "patterns": ["thank", "thanks", "awesome", "great", "perfect"],
-        "response": "😊 You're welcome! Upload an invoice anytime and I'll validate it for you.",
-    },
-    {
-        "patterns": ["bye", "goodbye", "see you"],
-        "response": "👋 Goodbye! Come back anytime you need invoice validation.",
-    },
-]
+class AnalyseRequest(BaseModel):
+    file_path: str
 
 
 class ChatRequest(BaseModel):
     message: str
-    upload_status: str | None = None   # "idle" | "uploading" | "success" | "error"
-    file_id: str | None = None
+    history: list[dict] | None = None
+    pipeline_result: dict | None = None
 
 
-def resolve_chat_response(message: str, upload_status: str | None, file_id: str | None) -> str:
-    msg = message.lower().strip()
-
-    # Context-aware responses when a file has been processed
-    if upload_status == "success" and file_id:
-        if any(k in msg for k in ["result", "show", "output", "extracted", "what did you find"]):
-            return (
-                f"✅ Invoice uploaded successfully! File ID: **{file_id}**. "
-                "The file is stored on the backend and ready for AI extraction. "
-                "Switch to the Upload Info tab to see full metadata."
-            )
-        if any(k in msg for k in ["valid", "ok", "good", "correct"]):
-            return (
-                f"✅ Your invoice (ID: {file_id}) was received and saved successfully. "
-                "The extraction agent can now process it to validate all fields."
-            )
-
-    if upload_status == "error":
-        if any(k in msg for k in ["why", "error", "failed", "problem"]):
-            return (
-                "❌ The upload failed. Possible causes: backend not running on port 8000, "
-                "file too large, or network issue. Try clicking Retry."
-            )
-
-    # FAQ matching
-    for faq in FAQ:
-        for pattern in faq["patterns"]:
-            if pattern in msg:
-                return faq["response"]
-
-    # Default
-    return (
-        "🤔 I'm not sure I understood that. Try asking: "
-        "\"What can you do?\", \"What fields can you extract?\", "
-        "\"How do I upload?\", or \"Is my data secure?\" — "
-        "or just upload an invoice and I'll get to work!"
-    )
+class ChartRequest(BaseModel):
+    pipeline_result: dict          # full pipeline report
 
 
-# ── Routes 
+# ─────────────────────────────────────────────────────────────────
+# ROUTES
+# ─────────────────────────────────────────────────────────────────
 
 @app.get("/", tags=["Health"])
 def health_check():
-    return {"status": "ok", "message": "Invoice Agent API is running."}
+    return {"status": "ok", "version": "2.0.0"}
 
 
 @app.post("/api/invoices/upload", tags=["Invoices"])
 async def upload_invoice(file: UploadFile = File(...)):
-    """Accept a PDF, validate, save to local storage, return metadata."""
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
     result = await save_invoice_file(file)
     return JSONResponse(status_code=200, content=result)
 
 
+@app.post("/api/invoices/analyse", tags=["Invoices"])
+def analyse_invoice(req: AnalyseRequest):
+    try:
+        raw_text = extract_text_from_pdf(req.file_path)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not read PDF: {exc}")
+
+    if not raw_text.strip():
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No text could be extracted. The PDF may be a scanned image. "
+                "Please upload a text-based PDF."
+            ),
+        )
+
+    try:
+        report = run_pipeline_from_text(raw_text)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return JSONResponse(status_code=200, content=report)
+
+
 @app.get("/api/invoices", tags=["Invoices"])
 def get_invoices():
-    """Return metadata for all uploaded invoices."""
-    files = list_invoice_files()
-    return {"invoices": files}
+    return {"invoices": list_invoice_files()}
 
 
 @app.post("/api/chat", tags=["Chat"])
 def chat(req: ChatRequest):
-    """
-    Simple rule-based chat endpoint.
-    Accepts a user message plus optional upload context and returns a bot reply.
-    """
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
-
-    reply = resolve_chat_response(req.message, req.upload_status, req.file_id)
+    try:
+        reply = chat_with_agent(
+            user_message=req.message,
+            history=req.history,
+            pipeline_result=req.pipeline_result,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"LLM error: {exc}")
     return {"reply": reply}
 
 
-# ── Entry point 
+@app.post("/api/invoices/chart", tags=["Invoices"])
+def generate_chart(req: ChartRequest):
+    """
+    Generate a matplotlib bar chart of field confidence scores.
+    Returns a PNG image stream — frontend embeds it as <img src=…>.
+    Uses only matplotlib (already in most Python envs).
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")          # headless — no display needed
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        import numpy as np
+    except ImportError:
+        raise HTTPException(status_code=500, detail="matplotlib is not installed.")
+
+    fields = (
+        req.pipeline_result
+        .get("extractor_agent", {})
+        .get("extracted_fields", {})
+    )
+
+    if not fields:
+        raise HTTPException(status_code=422, detail="No extracted fields in pipeline result.")
+
+    # Prepare data — top 10 by confidence
+    items = sorted(
+        [(k.replace("_", " ").title(), v.get("confidence", 0)) for k, v in fields.items()],
+        key=lambda x: x[1],
+        reverse=True,
+    )[:10]
+
+    labels  = [x[0] for x in items]
+    values  = [x[1] for x in items]
+    colors  = ["#28c840" if v >= 85 else "#ffbd2e" if v >= 60 else "#e05c5c" for v in values]
+
+    # ── Plot ──────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(7, max(3, len(labels) * 0.55)))
+    fig.patch.set_facecolor("#1a2236")
+    ax.set_facecolor("#1a2236")
+
+    y_pos = np.arange(len(labels))
+    bars  = ax.barh(y_pos, values, color=colors, height=0.6, zorder=3)
+
+    # Value labels on bars
+    for bar, val in zip(bars, values):
+        ax.text(
+            min(val + 1.5, 102), bar.get_y() + bar.get_height() / 2,
+            f"{val}%", va="center", ha="left",
+            fontsize=8.5, color="#e2e8f0", fontweight="bold",
+        )
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels, color="#9ca3af", fontsize=9)
+    ax.set_xlim(0, 115)
+    ax.set_xlabel("Confidence (%)", color="#9ca3af", fontsize=9)
+    ax.set_title("Field Confidence Scores", color="#ffffff", fontsize=11, fontweight="bold", pad=10)
+    ax.tick_params(colors="#9ca3af", which="both")
+    ax.spines[:].set_color("#1f2f4a")
+    ax.xaxis.set_tick_params(color="#1f2f4a")
+    ax.grid(axis="x", color="#1f2f4a", linewidth=0.8, zorder=0)
+
+    # Legend
+    legend_patches = [
+        mpatches.Patch(color="#28c840", label="Good (≥85%)"),
+        mpatches.Patch(color="#ffbd2e", label="OK (60–84%)"),
+        mpatches.Patch(color="#e05c5c", label="Low (<60%)"),
+    ]
+    ax.legend(handles=legend_patches, loc="lower right", fontsize=7.5,
+              facecolor="#111827", edgecolor="#1f2f4a", labelcolor="#9ca3af")
+
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", dpi=130, bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+
+    return StreamingResponse(buf, media_type="image/png")
+
+
+# ─────────────────────────────────────────────────────────────────
+# ENTRY POINT
+# ─────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

@@ -4,140 +4,129 @@ import json
 from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 
+# Load environment variables
 load_dotenv()
 
-VALIDATION_SYSTEM_PROMPT = """
-You are Agent 2 — Validation Agent in a multi-agent AI workflow.
-You receive structured JSON output from Agent 1 (Extraction Agent) and apply a strict rules engine to validate every field.
+# Check API key
+api_key = os.getenv("AZURE_OPENAI_API_KEY")
+if not api_key:
+    raise ValueError("AZURE_OPENAI_API_KEY not found")
 
-Your responsibilities:
-- Check mandatory field presence
-- Validate date formats
-- Check cross-field consistency
-- Flag fields where confidence score is below 85%
-- Compute an overall validation verdict
+# System prompt
+EXTRACTION_SYSTEM_PROMPT = """
+You are Agent 1 — Data Extraction Agent in a multi-agent AI workflow.
+Your responsibility is to extract structured information from invoices, banking PDFs, financial documents, and other business documents.
 
-────────────────────────────────────────────
-MANDATORY FIELD RULES
-────────────────────────────────────────────
-For document_type = "invoice":
-  Mandatory: invoice_number, invoice_date, vendor_name, total_amount
+You must:
+- Extract only fields that are actually present in the document
+- Generate confidence scores for every extracted field
+- Preserve original values from the document
+- Avoid hallucinating or guessing missing information
+- Return ONLY valid JSON
 
-For document_type = "bank_statement":
-  Mandatory: bank_name, account_number, ifsc_code
+The extracted data will later be validated by downstream validation and exception agents.
 
-For document_type = "loan_document":
-  Mandatory: loan_account_number, borrower_name, total_amount
-
-For document_type = "unknown":
-  Flag all extracted fields for manual review.
-
-────────────────────────────────────────────
-DATE FORMAT RULES
-────────────────────────────────────────────
-Valid date formats: DD-MM-YYYY, DD/MM/YYYY, YYYY-MM-DD, Month DD YYYY
-- invoice_date, due_date, statement_date must match one of the above
-- Flag if date is in ambiguous format (e.g. 01/02/03)
-- Flag if due_date is before invoice_date (logical inconsistency)
-
-────────────────────────────────────────────
-CROSS-FIELD CONSISTENCY RULES
-────────────────────────────────────────────
-- subtotal + tax_amount must equal total_amount (allow ±1 unit rounding)
-- If both billing_address and shipping_address are present, they may differ — that is acceptable
-- If gst_number is present, it must be 15 characters (Indian GST format)
-- If pan_number is present, it must match pattern: [A-Z]{5}[0-9]{4}[A-Z]{1}
-- If ifsc_code is present, it must be 11 characters starting with 4 letters
-- currency must be a valid 3-letter ISO code (e.g. INR, USD, EUR)
-
-────────────────────────────────────────────
-CONFIDENCE THRESHOLD RULES
-────────────────────────────────────────────
-- Confidence >= 85: PASS
-- Confidence 60–84: WARN (low confidence, flag for review)
-- Confidence < 60: FAIL (unreliable, must be escalated)
-- overall_confidence < 85: mark overall_validation as "needs_review"
-
-────────────────────────────────────────────
-OUTPUT FORMAT (return ONLY valid JSON, no markdown)
-────────────────────────────────────────────
+Required JSON structure:
 {
   "document_type": "",
-  "validation_status": "passed" | "failed" | "needs_review",
-  "mandatory_fields_check": {
-    "status": "passed" | "failed",
-    "missing_mandatory_fields": []
-  },
-  "field_validations": {
-    "<field_name>": {
-      "value": "",
-      "confidence": 0,
-      "confidence_status": "PASS" | "WARN" | "FAIL",
-      "format_valid": true | false,
-      "format_note": "",
-      "cross_check_valid": true | false,
-      "cross_check_note": ""
-    }
-  },
-  "cross_field_checks": [
-    {
-      "check": "",
-      "result": "passed" | "failed" | "not_applicable",
-      "note": ""
-    }
-  ],
-  "flagged_fields": [],
-  "validation_summary": ""
+  "extracted_fields": {},
+  "line_items": [],
+  "missing_fields": [],
+  "extraction_status": "",
+  "overall_confidence": 0
 }
 
+Extraction Rules:
+- Include ONLY fields found in the document
+- Do NOT include empty fields
+- Do NOT create keys for unavailable data
+- If invoice_number is not present, do not include it
+- If GST number is not present, do not include it
+- Same rule applies for all fields
+- don't miss any possible fields
+
+Example extracted_fields format:
+"extracted_fields": {
+  "invoice_number": {
+    "value": "INV-1023",
+    "confidence": 96
+  },
+  "invoice_date": {
+    "value": "12-05-2026",
+    "confidence": 92
+  },
+  "total_amount": {
+    "value": "45,000",
+    "confidence": 98
+  }
+}
+
+Possible fields:
+- invoice_number, invoice_date, due_date
+- vendor_name, customer_name
+- billing_address, shipping_address
+- phone_number, email
+- gst_number, pan_number
+- loan_account_number, bank_name, account_number, ifsc_code
+- currency, subtotal, tax_amount, total_amount
+
+Example Line Item Format:
+"line_items": [
+  {
+    "description": "Laptop",
+    "quantity": "2",
+    "unit_price": "50000",
+    "amount": "100000",
+    "confidence": 95
+  }
+]
+
 Rules:
-- Return ONLY valid JSON, no markdown, no ```json fences
-- Do not add fields that were not in Agent 1's output
-- flagged_fields = list of field names that have WARN or FAIL confidence, or failed format/cross-checks
-- validation_summary = a single plain-English sentence summarizing the validation outcome
-- If a cross-field check is not applicable (fields missing), set result to "not_applicable"
+- Return ONLY valid JSON
+- Do not return markdown
+- Do not use ```json
+- Confidence score must be between 0 and 100
+- Do not guess values not present in the document
+- Preserve exact extracted values from the source document
+- If a field is unclear or partially visible, assign low confidence
+- If document type is unknown, set document_type as "unknown"
+- extraction_status must be: "success", "partial", or "failed"
 """.strip()
 
+# Initialize LLM via Azure OpenAI
+llm = AzureChatOpenAI(
+    azure_deployment="gpt-4o-mini",
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    api_version="2024-02-01",
+)
 
-def run_agent2(agent1_output: dict) -> dict:
-    api_key = os.getenv("AZURE_OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("AZURE_OPENAI_API_KEY not found")
+# Read extracted raw text
+with open("output.txt", "r", encoding="utf-8") as f:
+    file_content = f.read()
 
-    llm = AzureChatOpenAI(
-        azure_deployment="gpt-4o-mini",
-        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-        api_key=api_key,
-        api_version="2024-02-01",
-    )
+# Build messages
+messages = [
+    SystemMessage(content=EXTRACTION_SYSTEM_PROMPT),
+    HumanMessage(content=file_content),
+]
 
-    messages = [
-        SystemMessage(content=VALIDATION_SYSTEM_PROMPT),
-        HumanMessage(content=json.dumps(agent1_output, indent=2)),
-    ]
-
-    response = llm.invoke(messages)
-    response_text = response.content.strip()
-
-    # Strip accidental markdown fences
-    if response_text.startswith("```"):
-        response_text = response_text.split("```")[1]
-        if response_text.startswith("json"):
-            response_text = response_text[4:]
-        response_text = response_text.strip()
-
-    try:
-        return json.loads(response_text)
-    except json.JSONDecodeError as e:
-        print(f"[Agent 2 ERROR] Failed to parse JSON: {e}")
-        print("[RAW RESPONSE]:", response_text)
-        return {}
+# Invoke LLM
+response = llm.invoke(messages)
+response_text = response.content.strip()
 
 
-if __name__ == "__main__":
-    # Standalone test: reads agent1_output.json
-    with open("agent1_output.json", "r", encoding="utf-8") as f:
-        agent1_data = json.load(f)
+# Strip accidental markdown fences if model ignores instructions
+if response_text.startswith("```"):
+    response_text = response_text.split("```")[1]
+    if response_text.startswith("json"):
+        response_text = response_text[4:]
+    response_text = response_text.strip()
 
-    result = run_agent2(agent1_data)
-    print(json.dumps(result, indent=4, ensure_ascii=False))
+# Parse JSON
+try:
+    parsed_json = json.loads(response_text)
+    print(json.dumps(parsed_json, indent=4, ensure_ascii=False))
+except json.JSONDecodeError as e:
+    print(f"[ERROR] Failed to parse JSON: {e}")
+    print("[RAW RESPONSE]:", response_text)

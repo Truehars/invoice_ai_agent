@@ -1,16 +1,29 @@
-from pydantic_settings import BaseSettings
+"""
+config.py
+─────────
+Centralised settings loaded from .env via pydantic-settings.
+All other modules import `settings` from here — never os.getenv directly.
+"""
+
 from pathlib import Path
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Directory where uploaded PDFs are saved (relative to project root)
+    # ── Storage ──────────────────────────────────────────────────
     UPLOAD_DIR: Path = Path("storage/invoices")
 
-    # CORS — allow the Vite dev server
-    ALLOWED_ORIGINS: list[str] = ["http://localhost:5173"]
+    # ── CORS ─────────────────────────────────────────────────────
+    ALLOWED_ORIGINS: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
 
-    # OpenRouter API key — loaded from .env
-    openrouter_api_key: str = ""
+    # ── Azure OpenAI ─────────────────────────────────────────────
+    AZURE_OPENAI_API_KEY: str = ""
+    AZURE_OPENAI_ENDPOINT: str = ""
+    AZURE_OPENAI_DEPLOYMENT: str = "gpt-4o-mini"
+    AZURE_OPENAI_API_VERSION: str = "2024-02-01"
 
     model_config = {
         "env_file": ".env",
@@ -21,5 +34,5 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Create the upload directory on startup if it doesn't exist
+# Create upload directory on import
 settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
